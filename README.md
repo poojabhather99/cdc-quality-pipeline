@@ -1,6 +1,8 @@
 # cdc-quality-pipeline: CDC Ingestion with Data-Quality Gates
 
 [![CI](https://github.com/poojabhather99/cdc-quality-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/poojabhather99/cdc-quality-pipeline/actions/workflows/ci.yml)
+
+**Live demo (runs in your browser):** https://poojabhather99.github.io/cdc-quality-pipeline/
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 
 A small, fully reproducible demo of how to turn a messy change-data-capture (CDC) stream into trustworthy analytics. It ingests Debezium-style change events, validates every record, quarantines bad ones with reasons, applies the rest in source-timestamp order, and publishes monthly KPIs, with a reconciliation check proving that **no event is silently lost**.

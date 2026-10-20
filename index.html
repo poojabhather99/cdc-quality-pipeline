@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDC Quality Pipeline demo</title>
+<link rel="icon" href="data:,">
+<meta name="description" content="Generate synthetic change events, push them through bronze, silver (validation, quarantine, dedupe, ordering) and gold KPI layers, and check that every event is accounted for.">
+<style>
+:root{--bg:#fafaf8;--fg:#1c1c1a;--mut:#6b6b66;--card:#fff;--line:#e3e2dc;--acc:#1f6f5c;--accfg:#fff;--bad:#a8321f;--ok:#1f6f5c;--code:#f2f1ec}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ecebe5;--mut:#a09f98;--card:#1d1d1b;--line:#33332f;--acc:#4cb89d;--accfg:#10201b;--bad:#ef8a75;--ok:#4cb89d;--code:#242421}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:860px;margin:0 auto;padding:28px 16px 64px}
+h1{font-size:1.7rem;margin:0 0 6px}
+h2{font-size:1.05rem;margin:28px 0 10px}
+p.lead{color:var(--mut);margin:0 0 14px}
+a{color:var(--acc)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin:12px 0}
+label{display:block;font-size:.85rem;color:var(--mut);margin:10px 0 4px}
+input,select,textarea{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
+textarea{min-height:110px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85rem}
+button{background:var(--acc);color:var(--accfg);border:0;border-radius:8px;padding:9px 14px;font:inherit;font-weight:600;cursor:pointer;margin:8px 8px 0 0}
+button.alt{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+button:disabled{opacity:.5;cursor:wait}
+.row{display:flex;gap:12px;flex-wrap:wrap}.row>*{flex:1 1 180px}
+pre{background:var(--code);padding:10px 12px;border-radius:8px;overflow:auto;font-size:.82rem;white-space:pre-wrap;word-break:break-word;margin:6px 0}
+table{border-collapse:collapse;width:100%;font-size:.88rem}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left}
+.tag{margin-left:8px;display:inline-block;padding:1px 8px;border-radius:99px;font-size:.78rem;border:1px solid var(--line)}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut)}
+#status{font-size:.9rem;color:var(--mut);margin:8px 0}
+.bubble{padding:8px 12px;border-radius:12px;margin:6px 0;max-width:92%;white-space:pre-wrap;border:1px solid var(--line)}
+.me{margin-left:auto;background:var(--acc);color:var(--accfg);border-color:var(--acc)}
+footer{margin-top:36px;color:var(--mut);font-size:.88rem}
+</style>
+</head>
+<body>
+<main>
+<h1>CDC ingestion with data quality gates</h1>
+<p class="lead">Generate synthetic change events, push them through bronze, silver (validation, quarantine, dedupe, ordering) and gold KPI layers, and check that every event is accounted for.</p>
+<p class="mut" style="font-size:.9rem">This page runs the project's actual Python source in your browser (via Pyodide). Nothing is sent to a server. <a href="https://github.com/poojabhather99/cdc-quality-pipeline">View the code on GitHub</a>.</p>
+<div id="status">Loading Python (first visit can take 10 to 20 seconds)...</div>
+<div id="app" hidden>
+
+<div class="card">
+<div class="row"><div><label for="n">Visits to simulate</label><input id="n" type="number" value="300" min="20" max="2000"></div>
+<div><label for="seed">Random seed</label><input id="seed" type="number" value="7"></div></div>
+<button id="run">Run pipeline</button>
+<div id="out"></div>
+</div>
+
+</div>
+<footer>All data is synthetic and generated in your browser. Change the seed or size and the reconciliation check still has to balance, or the run fails loudly.</footer>
+</main>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script>
+const FILES = ["src/cdcpipe/__init__.py", "src/cdcpipe/generate.py", "src/cdcpipe/quality.py", "src/cdcpipe/layers.py", "src/cdcpipe/run.py"];
+const PACKAGES = ["pandas", "duckdb"];
+const PY = String.raw`
+import json
+from datetime import date
+from pathlib import Path
+import pandas as pd
+from cdcpipe.generate import generate_events, write_events
+from cdcpipe.layers import build_gold, build_silver, load_bronze
+from cdcpipe.run import reconcile
+AS_OF = date(2026, 6, 30)
+def run(n, seed):
+    p = Path("/tmp/events.jsonl")
+    write_events(generate_events(int(n), int(seed)), p)
+    layers = build_silver(load_bronze(p), AS_OF)
+    stats = {k: int(v) for k, v in layers["stats"].iloc[0].to_dict().items()}
+    reconcile(stats)
+    gold = build_gold(layers["state"])
+    q = layers["quarantine"]
+    reasons = q["errors"].str.split(",").explode().value_counts().to_dict() if len(q) else {}
+    return json.dumps({"stats": stats, "reasons": {k: int(v) for k, v in reasons.items()},
+                       "quarantine": q.head(8).astype(str).to_dict("records"),
+                       "gold": gold.head(8).astype(str).to_dict("records"), "gold_rows": len(gold)})
+`;
+const $ = (id) => document.getElementById(id);
+const el = (tag, text, cls) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; };
+let py;
+async function boot() {
+  try {
+    py = await loadPyodide();
+    if (PACKAGES.length) { $('status').textContent = 'Loading ' + PACKAGES.join(', ') + '...'; await py.loadPackage(PACKAGES); }
+    const base = new URL('.', location.href).href;
+    for (const f of FILES) {
+      const r = await fetch(base + f);
+      if (!r.ok) throw new Error('could not load ' + f + ' (' + r.status + ')');
+      py.FS.mkdirTree('/app/' + f.split('/').slice(0, -1).join('/'));
+      py.FS.writeFile('/app/' + f, await r.text());
+    }
+    py.runPython("import sys; sys.path.insert(0, '/app/src')");
+    py.runPython(PY);
+    $('status').remove(); $('app').hidden = false;
+    init();
+  } catch (e) { $('status').textContent = 'Could not start the demo: ' + e.message; $('status').className = 'bad'; }
+}
+const call = (fn, ...args) => JSON.parse(py.globals.get(fn)(...args));
+
+function table(rows) {
+  const t = el('table'); if (!rows.length) return el('p', 'none', 'mut');
+  const cols = Object.keys(rows[0]); const h = el('tr'); cols.forEach((k) => h.append(el('th', k))); t.append(h);
+  rows.forEach((r) => { const tr = el('tr'); cols.forEach((k) => tr.append(el('td', r[k]))); t.append(tr); });
+  const w = el('div'); w.style.overflowX = 'auto'; w.append(t); return w;
+}
+function init() {
+  $('run').onclick = () => {
+    const o = $('out'); o.replaceChildren();
+    let r; try { r = call('run', $('n').value, $('seed').value); } catch (e) { o.append(el('p', 'Error: ' + e.message.split('\n').slice(-2).join(' '), 'bad')); return; }
+    const s = r.stats;
+    o.append(el('h2', 'Reconciliation'));
+    o.append(el('pre', s.raw_events + ' raw events = ' + s.quarantined + ' quarantined + ' + s.duplicates_dropped + ' duplicates dropped + ' + s.events_applied + ' applied  (checked: nothing lost)'));
+    o.append(el('pre', JSON.stringify(s, null, 2)));
+    o.append(el('h2', 'Why events were quarantined'), el('pre', JSON.stringify(r.reasons, null, 2)));
+    o.append(el('h2', 'Sample quarantined rows'), table(r.quarantine));
+    o.append(el('h2', 'Gold KPIs (first rows of ' + r.gold_rows + ')'), table(r.gold));
+  };
+  $('run').click();
+}
+
+boot();
+</script>
+</body>
+</html>
